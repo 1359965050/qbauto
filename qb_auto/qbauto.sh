@@ -142,17 +142,17 @@ get_hex_hash() {
         ((i++))
     done
 
-    # 方法1: 直接检查第5个参数（索引从0开始，现在是第3个参数）
-    if [ $# -ge 5 ] && [ -n "${5}" ]; then
-        local param_hash="${5}"
-        log "🔑 检查第5个参数的哈希值: $param_hash"
+    # 方法1: 直接检查第6个参数（索引从0开始，现在是第3个参数）
+    if [ $# -ge 6 ] && [ -n "${6}" ]; then
+        local param_hash="${6}"
+        log "🔑 检查第6个参数的哈希值: $param_hash"
         # 检查是否是有效的十六进制字符串（40字符的SHA1哈希）
         if [[ "$param_hash" =~ ^[a-fA-F0-9]{40}$ ]]; then
             log "✅ 从参数获取到十六进制哈希: $param_hash"
             echo "$param_hash"
             return 0
         else
-            log "❌ 第5个参数不是有效的40位十六进制哈希"
+            log "❌ 第6个参数不是有效的40位十六进制哈希"
         fi
     fi
 
