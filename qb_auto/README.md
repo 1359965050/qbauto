@@ -59,10 +59,6 @@ tail -20 /config/qbauto/log/qbauto.log
 
 tail -20 /config/qbauto/log/rclone_errors.log
 
-## 检查日志输出
-
-tail -f /config/qbauto/log/qbauto.log
-
 # 更新日志
 
 ## v1.0
@@ -96,6 +92,7 @@ tail -f /config/qbauto/log/qbauto.log
 ### 改善日志文件管理
 
 ### 简化目录结构
+
 
 
 
