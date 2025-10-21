@@ -46,19 +46,21 @@ rclone config
 # 故障排除
 
 ## 确保日志目录有写权限
+
 chmod 755 /config/qbauto/log
 
 ## 检查所有日志文件
+
 ls -la /config/qbauto/log/
 
 ## 查看最近错误
+
 tail -20 /config/qbauto/log/qbauto.log
+
 tail -20 /config/qbauto/log/rclone_errors.log
 
-## 手动运行脚本测试
-/bin/bash /path/to/qbauto.sh "测试种子" "/path/to/file"
-
 ## 检查日志输出
+
 tail -f /config/qbauto/log/qbauto.log
 
 # 更新日志
@@ -94,6 +96,7 @@ tail -f /config/qbauto/log/qbauto.log
 ### 改善日志文件管理
 
 ### 简化目录结构
+
 
 
 
