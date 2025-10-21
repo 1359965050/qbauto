@@ -20,10 +20,6 @@
 
 # 快速开始
 
-## 安装依赖
-
-sudo apt-get install curl
-
 ## 配置云存储
 
 rclone config
@@ -49,3 +45,4 @@ ls -la /config/qbauto/log
 ## 查看最近错误
 
 tail -20 /config/qbauto/log/qbauto.log
+
