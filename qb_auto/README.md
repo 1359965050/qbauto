@@ -4,7 +4,7 @@
 
 # 功能特点
 
-✅ 自动将下载完成的文件上传到云存储（支持 rclone）
+✅ 自动将下载完成的文件通过rclone上传到云存储
 
 ✅ 吸血模式：上传完成后自动删除种子和文件
 
@@ -45,4 +45,5 @@ ls -la /config/qbauto/log
 ## 查看最近错误
 
 tail -20 /config/qbauto/log/qbauto.log
+
 
