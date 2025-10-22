@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# qBittorrent 自动上传脚本
+# 功能：自动上传完成的文件到云存储并删除种子（吸血模式）
+
 # 配置文件路径
 CONFIG_FILE="/config/qbauto/qbauto.conf"
 
@@ -13,16 +16,57 @@ fi
 sed 's/\r$//' "$CONFIG_FILE" > "/tmp/qbauto_clean.conf"
 source "/tmp/qbauto_clean.conf"
 
+# 设置 rclone 配置文件路径
+if [ -n "$RCLONE_CONFIG" ] && [ -f "$RCLONE_CONFIG" ]; then
+    export RCLONE_CONFIG
+else
+    # 自动查找 rclone 配置文件
+    find_rclone_config() {
+        local possible_paths=(
+            "/config/rclone/rclone.conf"
+            "/etc/rclone/rclone.conf" 
+            "/home/qbittorrent/.config/rclone/rclone.conf"
+            "/root/.config/rclone/rclone.conf"
+            "$(rclone config file 2>/dev/null || echo '')"
+        )
+        
+        for path in "${possible_paths[@]}"; do
+            if [ -f "$path" ]; then
+                echo "$path"
+                return 0
+            fi
+        done
+        
+        local found_path=$(find / -name "rclone.conf" 2>/dev/null | head -1)
+        if [ -n "$found_path" ]; then
+            echo "$found_path"
+            return 0
+        fi
+        
+        return 1
+    }
+
+    RCLONE_CONFIG_AUTO=$(find_rclone_config)
+    if [ -n "$RCLONE_CONFIG_AUTO" ]; then
+        export RCLONE_CONFIG="$RCLONE_CONFIG_AUTO"
+    else
+        echo "错误：未找到 rclone 配置文件" >&2
+        exit 1
+    fi
+fi
+
 # 设置默认值
 LOG_DIR="${LOG_DIR:-/config/qbauto/log}"
 RCLONE_CMD="${RCLONE_CMD:-/usr/bin/rclone}"
 LEECHING_MODE="${LEECHING_MODE:-false}"
+RCLONE_RETRIES="${RCLONE_RETRIES:-3}"
+RCLONE_RETRY_DELAY="${RCLONE_RETRY_DELAY:-10s}"
 
 # 初始化日志目录
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/qbauto.log"
 
-# 简化日志函数
+# 日志函数
 log() {
     local message="$1"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $message" >> "$LOG_FILE"
@@ -58,9 +102,23 @@ check_basics() {
         return 1
     fi
 
+    # 检查 rclone 配置文件
+    if [ ! -f "$RCLONE_CONFIG" ]; then
+        log "❌ rclone 配置文件不存在: $RCLONE_CONFIG"
+        return 1
+    fi
+
     # 测试 rclone 连接
-    if ! $RCLONE_CMD lsd "$RCLONE_DEST:" >/dev/null 2>&1; then
-        log "❌ rclone 连接失败"
+    log "🔧 测试 rclone 连接..."
+    local rclone_test_output
+    rclone_test_output=$($RCLONE_CMD lsd "$RCLONE_DEST:" 2>&1)
+    local rclone_exit_code=$?
+    
+    if [ $rclone_exit_code -eq 0 ]; then
+        log "✅ rclone 连接成功"
+    else
+        log "❌ rclone 连接失败，退出码: $rclone_exit_code"
+        log "❌ 错误输出: $rclone_test_output"
         return 1
     fi
 
@@ -93,7 +151,7 @@ get_upload_files() {
     printf '%s\0' "${files[@]}"
 }
 
-# 上传文件
+# 上传文件（带重试机制）
 upload_files() {
     local files=("$@")
     local upload_path="${UPLOAD_PATH%/}"
@@ -110,13 +168,29 @@ upload_files() {
         fi
         
         local filename=$(basename "$file_path")
-        log "正在上传: $filename"
+        local retry_count=0
+        local upload_success=false
         
-        if $RCLONE_CMD copy --progress "$file_path" "$RCLONE_DEST:$upload_path/" >> "$LOG_DIR/rclone.log" 2>&1; then
-            log "✅ 上传成功: $filename"
-            ((success++))
-        else
-            log "❌ 上传失败: $filename"
+        while [ $retry_count -lt $RCLONE_RETRIES ]; do
+            log "🔄 尝试上传 ($((retry_count+1))/$RCLONE_RETRIES): $filename"
+            
+            if $RCLONE_CMD copy --progress "$file_path" "$RCLONE_DEST:$upload_path/" >> "$LOG_DIR/rclone.log" 2>&1; then
+                log "✅ 上传成功: $filename"
+                upload_success=true
+                ((success++))
+                break
+            else
+                log "❌ 上传失败: $filename (尝试 $((retry_count+1))/$RCLONE_RETRIES)"
+                ((retry_count++))
+                if [ $retry_count -lt $RCLONE_RETRIES ]; then
+                    log "⏳ 等待 $RCLONE_RETRY_DELAY 后重试..."
+                    sleep $RCLONE_RETRY_DELAY
+                fi
+            fi
+        done
+        
+        if [ "$upload_success" = "false" ]; then
+            log "💥 最终上传失败: $filename"
         fi
     done
 
@@ -124,39 +198,15 @@ upload_files() {
     [ $success -eq $total ]
 }
 
-# 获取十六进制哈希值 - 简化版本
+# 获取十六进制哈希值
 get_hex_hash() {
     local torrent_name="$1"
     local content_dir="$2"
-    shift 2  # 移除前两个参数，剩下的就是额外参数
-    
+    shift 2
+
     log "🔍 开始获取种子哈希值"
-    log "🔍 种子名称: $torrent_name"
-    log "🔍 内容路径: $content_dir"
-    log "🔍 剩余参数数量: $#"
     
-    # 输出所有剩余参数用于调试
-    local i=1
-    for arg in "$@"; do
-        log "🔍 参数$i: $arg"
-        ((i++))
-    done
-
-    # 方法1: 直接检查第6个参数（索引从0开始，现在是第3个参数）
-    if [ $# -ge 6 ] && [ -n "${6}" ]; then
-        local param_hash="${6}"
-        log "🔑 检查第6个参数的哈希值: $param_hash"
-        # 检查是否是有效的十六进制字符串（40字符的SHA1哈希）
-        if [[ "$param_hash" =~ ^[a-fA-F0-9]{40}$ ]]; then
-            log "✅ 从参数获取到十六进制哈希: $param_hash"
-            echo "$param_hash"
-            return 0
-        else
-            log "❌ 第6个参数不是有效的40位十六进制哈希"
-        fi
-    fi
-
-    # 方法2: 遍历所有参数寻找哈希值
+    # 方法1: 遍历所有参数寻找40位十六进制哈希
     local i=1
     for arg in "$@"; do
         if [[ "$arg" =~ ^[a-fA-F0-9]{40}$ ]]; then
@@ -167,7 +217,7 @@ get_hex_hash() {
         ((i++))
     done
 
-    # 方法3: 尝试从qBittorrent API获取哈希值
+    # 方法2: 尝试从qBittorrent API获取哈希值
     if [ -n "$QB_WEB_URL" ] && [ -n "$QB_USERNAME" ] && [ -n "$QB_PASSWORD" ]; then
         log "🔑 尝试通过API获取哈希值"
         local cookie_file="$LOG_DIR/qb_cookie.txt"
@@ -183,7 +233,7 @@ get_hex_hash() {
             # 获取种子列表并查找匹配的种子
             local torrent_list=$(curl -s -b "$cookie_file" "$QB_WEB_URL/api/v2/torrents/info")
             local hex_hash=$(echo "$torrent_list" | \
-                jq -r --arg name "$torrent_name" --arg path "$content_dir" \
+                jq -r --arg name "$torrent_name" --arg path "$(dirname "$content_dir")" \
                 '.[] | select(.name == $name and .save_path == $path) | .hash' 2>/dev/null)
             
             rm -f "$cookie_file"
@@ -202,7 +252,7 @@ get_hex_hash() {
         log "⚠️ 缺少API配置信息，跳过API获取"
     fi
     
-    # 方法4: 如果以上都失败，生成基于名称和路径的伪哈希
+    # 方法3: 生成基于名称和路径的伪哈希
     local fallback_hash=$(echo -n "${torrent_name}${content_dir}" | sha1sum | cut -d' ' -f1)
     log "⚠️ 所有方法失败，使用回退哈希: $fallback_hash"
     echo "$fallback_hash"
@@ -271,6 +321,7 @@ process_torrent() {
         rm -f "$cookie_file"
     else
         log "❌ 登录失败"
+        return 1
     fi
     
     log "🔧 吸血模式处理完成"
@@ -291,7 +342,7 @@ main() {
         exit 1
     fi
 
-    # 获取十六进制哈希值 - 传递所有参数
+    # 获取十六进制哈希值
     log "🔍 正在获取哈希值..."
     local torrent_hash
     torrent_hash=$(get_hex_hash "$torrent_name" "$content_dir" "$@")
@@ -312,11 +363,6 @@ main() {
         log "🚫 没有找到可上传的文件"
         exit 2
     fi
-
-    log "📋 实际文件列表:"
-    for file in "${files[@]}"; do
-        log "  - $file"
-    done
 
     # 上传文件
     if upload_files "${files[@]}"; then
