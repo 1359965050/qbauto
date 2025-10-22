@@ -19,7 +19,7 @@ source "/tmp/qbauto_clean.conf"
 # 设置 rclone 配置文件路径
 if [ -n "$RCLONE_CONFIG" ] && [ -f "$RCLONE_CONFIG" ]; then
     export RCLONE_CONFIG
-else
+    
     # 自动查找 rclone 配置文件
     find_rclone_config() {
         local possible_paths=(
@@ -61,6 +61,7 @@ RCLONE_CMD="${RCLONE_CMD:-/usr/bin/rclone}"
 LEECHING_MODE="${LEECHING_MODE:-false}"
 RCLONE_RETRIES="${RCLONE_RETRIES:-3}"
 RCLONE_RETRY_DELAY="${RCLONE_RETRY_DELAY:-10s}"
+BLACKLIST_KEYWORDS="${BLACKLIST_KEYWORDS:-}"
 
 # 初始化日志目录
 mkdir -p "$LOG_DIR"
@@ -71,6 +72,55 @@ log() {
     local message="$1"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $message" >> "$LOG_FILE"
     echo "$message" >&2
+}
+
+# 黑名单检查函数
+check_blacklist() {
+    local file_path="$1"
+    local filename=$(basename "$file_path")
+    
+    # 如果没有设置黑名单关键词，直接通过
+    if [ -z "$BLACKLIST_KEYWORDS" ]; then
+        return 1
+    fi
+    
+    # 将关键词转换为小写进行比较（不区分大小写）
+    local lower_filename=$(echo "$filename" | tr '[:upper:]' '[:lower:]')
+    local lower_keywords=$(echo "$BLACKLIST_KEYWORDS" | tr '[:upper:]' '[:lower:]')
+    
+    # 分割关键词为数组
+    IFS=',' read -ra keywords <<< "$lower_keywords"
+    
+    for keyword in "${keywords[@]}"; do
+        # 去除关键词前后的空格
+        keyword_clean=$(echo "$keyword" | xargs)
+        if [ -n "$keyword_clean" ] && [[ "$lower_filename" == *"$keyword_clean"* ]]; then
+            log "🚫 文件包含黑名单关键词 '$keyword_clean': $filename"
+            return 0  # 包含黑名单关键词
+        fi
+    done
+    
+    return 1  # 不包含黑名单关键词
+}
+
+# 检查文件夹是否包含黑名单文件
+check_folder_blacklist() {
+    local folder_path="$1"
+    
+    # 如果没有设置黑名单关键词，直接通过
+    if [ -z "$BLACKLIST_KEYWORDS" ]; then
+        return 1
+    fi
+    
+    # 检查文件夹中的所有文件
+    while IFS= read -r -d '' file; do
+        if check_blacklist "$file"; then
+            log "🚫 文件夹包含黑名单文件: $(basename "$file")"
+            return 0  # 文件夹包含黑名单文件
+        fi
+    done < <(find "$folder_path" -type f -print0 2>/dev/null)
+    
+    return 1  # 文件夹不包含黑名单文件
 }
 
 # 主日志记录开始
@@ -124,20 +174,32 @@ check_basics() {
 
     log "✅ 基础检查通过"
     log "📋 配置信息: LEECHING_MODE=$LEECHING_MODE, RCLONE_DEST=$RCLONE_DEST, UPLOAD_PATH=$UPLOAD_PATH"
+    log "📋 黑名单关键词: ${BLACKLIST_KEYWORDS:-无}"
     return 0
 }
 
-# 获取要上传的文件列表
+# 获取要上传的文件列表（应用黑名单过滤）
 get_upload_files() {
     local content_path="$1"
     local files=()
 
     if [ -f "$content_path" ]; then
-        # 单个文件
-        files=("$content_path")
-        log "📄 单个文件: $(basename "$content_path")"
+        # 单个文件 - 检查黑名单
+        if check_blacklist "$content_path"; then
+            log "🚫 跳过黑名单文件: $(basename "$content_path")"
+            return 1
+        else
+            files=("$content_path")
+            log "📄 单个文件: $(basename "$content_path")"
+        fi
     elif [ -d "$content_path" ]; then
-        # 目录中的所有文件
+        # 目录 - 先检查整个文件夹是否包含黑名单文件
+        if check_folder_blacklist "$content_path"; then
+            log "🚫 跳过包含黑名单文件的文件夹: $(basename "$content_path")"
+            return 1
+        fi
+        
+        # 文件夹中没有黑名单文件，获取所有文件
         while IFS= read -r -d '' file; do
             files+=("$file")
         done < <(find "$content_path" -type f -print0 2>/dev/null)
@@ -223,15 +285,19 @@ get_hex_hash() {
         local cookie_file="$LOG_DIR/qb_cookie.txt"
         
         # 登录qBittorrent
-        if curl -s -c "$cookie_file" -X POST \
+        local login_result
+        login_result=$(curl -s -c "$cookie_file" -X POST \
             --data-urlencode "username=$QB_USERNAME" \
             --data-urlencode "password=$QB_PASSWORD" \
-            "$QB_WEB_URL/api/v2/auth/login" >/dev/null 2>&1; then
-            
+            "$QB_WEB_URL/api/v2/auth/login" 2>&1)
+        
+        local login_exit_code=$?
+        
+        if [ $login_exit_code -eq 0 ] && [ -f "$cookie_file" ] && grep -q "SID" "$cookie_file"; then
             log "✅ API登录成功"
             
             # 获取种子列表并查找匹配的种子
-            local torrent_list=$(curl -s -b "$cookie_file" "$QB_WEB_URL/api/v2/torrents/info")
+            local torrent_list=$(curl -s -b "$cookie_file" "$QB_WEB_URL/api/v2/torrents/info" 2>&1)
             local hex_hash=$(echo "$torrent_list" | \
                 jq -r --arg name "$torrent_name" --arg path "$(dirname "$content_dir")" \
                 '.[] | select(.name == $name and .save_path == $path) | .hash' 2>/dev/null)
@@ -246,7 +312,8 @@ get_hex_hash() {
                 log "❌ API未找到匹配的种子"
             fi
         else
-            log "❌ API登录失败"
+            log "❌ API登录失败，退出码: $login_exit_code"
+            log "❌ 登录响应: $login_result"
         fi
     else
         log "⚠️ 缺少API配置信息，跳过API获取"
@@ -258,7 +325,7 @@ get_hex_hash() {
     echo "$fallback_hash"
 }
 
-# 处理种子（吸血模式）
+# 处理种子（吸血模式）- 增强版本
 process_torrent() {
     if [ "$LEECHING_MODE" != "true" ]; then
         log "ℹ️ 吸血模式未启用，跳过种子处理"
@@ -282,26 +349,35 @@ process_torrent() {
 
     local cookie_file="$LOG_DIR/qb_cookie.txt"
     
-    # 登录 qBittorrent
+    # 登录 qBittorrent - 增强错误处理
     log "🔑 尝试登录qBittorrent..."
-    local login_response=$(curl -s -c "$cookie_file" -X POST \
+    local login_response
+    login_response=$(curl -s -w "%{http_code}" -c "$cookie_file" -X POST \
         --data-urlencode "username=$QB_USERNAME" \
         --data-urlencode "password=$QB_PASSWORD" \
-        "$QB_WEB_URL/api/v2/auth/login")
+        "$QB_WEB_URL/api/v2/auth/login" 2>&1)
     
-    if [ $? -eq 0 ] && [ -f "$cookie_file" ] && grep -q "SID" "$cookie_file"; then
+    local http_code="${login_response: -3}"
+    local response_body="${login_response%???}"
+    
+    log "🔧 登录响应状态码: $http_code"
+    
+    if [ "$http_code" = "200" ] && [ -f "$cookie_file" ] && grep -q "SID" "$cookie_file"; then
         log "✅ 登录成功，准备删除种子"
         
         # 删除种子（使用十六进制哈希）
         log "🗑️ 发送删除请求，哈希: $torrent_hash"
-        local delete_response=$(curl -s -b "$cookie_file" -X POST \
+        local delete_response
+        delete_response=$(curl -s -w "%{http_code}" -b "$cookie_file" -X POST \
             --data-urlencode "hashes=$torrent_hash" \
             --data-urlencode "deleteFiles=true" \
-            "$QB_WEB_URL/api/v2/torrents/delete")
+            "$QB_WEB_URL/api/v2/torrents/delete" 2>&1)
         
-        local curl_exit_code=$?
+        local delete_http_code="${delete_response: -3}"
         
-        if [ $curl_exit_code -eq 0 ]; then
+        log "🔧 删除响应状态码: $delete_http_code"
+        
+        if [ "$delete_http_code" = "200" ]; then
             log "✅ 种子删除请求发送成功"
             
             # 验证种子是否真的被删除
@@ -313,14 +389,21 @@ process_torrent() {
                 log "✅ 种子确认已删除"
             fi
         else
-            log "❌ 种子删除请求失败，curl退出码: $curl_exit_code"
+            log "❌ 种子删除请求失败，HTTP状态码: $delete_http_code"
+            log "❌ 删除响应: ${delete_response%???}"
         fi
         
         # 登出
         curl -s -b "$cookie_file" "$QB_WEB_URL/api/v2/auth/logout" >/dev/null 2>&1
         rm -f "$cookie_file"
     else
-        log "❌ 登录失败"
+        log "❌ 登录失败，HTTP状态码: $http_code"
+        log "❌ 登录响应: $response_body"
+        log "🔧 检查项目:"
+        log "  - QB_WEB_URL: $QB_WEB_URL"
+        log "  - QB_USERNAME: $QB_USERNAME"
+        log "  - QB_PASSWORD: [已设置]"
+        log "  - WebUI是否启用: 请检查qBittorrent设置"
         return 1
     fi
     
@@ -355,13 +438,22 @@ main() {
     
     log "🔐 使用的哈希值: $torrent_hash"
 
-    # 获取文件列表
+    # 获取文件列表（已应用黑名单过滤）
     local files
     mapfile -d '' files < <(get_upload_files "$content_dir")
     
     if [ ${#files[@]} -eq 0 ]; then
-        log "🚫 没有找到可上传的文件"
-        exit 2
+        log "🚫 没有找到可上传的文件（可能被黑名单过滤）"
+        # 即使没有文件上传，如果是吸血模式且获取到了哈希值，仍然删除种子
+        if [ "$LEECHING_MODE" = "true" ] && [ -n "$torrent_hash" ]; then
+            log "🔄 没有文件需要上传，但吸血模式已启用，尝试删除种子..."
+            if process_torrent "$torrent_hash"; then
+                log "🎉 种子已删除（无文件上传）"
+            else
+                log "⚠️ 种子删除失败（无文件上传）"
+            fi
+        fi
+        exit 0
     fi
 
     # 上传文件
