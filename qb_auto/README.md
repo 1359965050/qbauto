@@ -61,7 +61,7 @@ Rclone 配置文件解决方案
 
 问题描述
 
-脚本需要访问 rclone 配置文件，但配置文件可能位于不同位置。
+脚本需要访问 rclone 配置文件，却无法访问
 
 解决方案
 
@@ -69,8 +69,9 @@ Rclone 配置文件解决方案
 
 在 qbauto.conf 中设置：
 ```
-RCLONE_CONFIG=/config/rclone/rclone.conf
+RCLONE_CONFIG=/.../rclone.conf
 ```
+并向容器开放相应文件夹的权限
 方法2：自动查找
 
 如果未指定 RCLONE_CONFIG，脚本会自动搜索以下位置：
@@ -83,7 +84,7 @@ RCLONE_CONFIG=/config/rclone/rclone.conf
 
 /root/.config/rclone/rclone.conf
 ```
-rclone 默认配置路径
+根据日志给容器添加相应文件夹的权限
 
 方法3：查找现有配置文件
 
@@ -176,4 +177,5 @@ A: 调整 rclone 传输参数或检查网络连接
 3. 根据你的环境修改 `qbauto.conf` 中的配置
 4. 
 5. 将 `README.md` 作为使用文档参考
+
 
