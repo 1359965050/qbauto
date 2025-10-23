@@ -40,6 +40,7 @@ mkdir -p /config/qbauto/log
 /config/qbauto/
 ├── qbauto.sh      # 主脚本
 ├── qbauto.conf    # 配置文件
+├── modules        # 模块目录
 └── log/           # 日志目录
 ```
 ### 3. 设置脚本权限
@@ -186,6 +187,7 @@ A: 调整 rclone 传输参数或检查网络连接
 3. 根据你的环境修改 `qbauto.conf` 中的配置
 4. 
 5. 将 `README.md` 作为使用文档参考
+
 
 
 
