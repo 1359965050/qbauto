@@ -2,16 +2,18 @@
 
 # =============================================================================
 # qBittorrent 自动上传脚本 - 主入口
-# 版本：2.0 增强版（含通知和文件过滤）
+# 版本：2.1 增强版（含通知和文件过滤）
 # =============================================================================
 
 # 脚本目录和模块路径
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULES_DIR="${SCRIPT_DIR}/modules"
-CONFIG_FILE="${SCRIPT_DIR}/qbauto.conf"
+CONFIG_DIR="/config/qbauto"
+CONFIG_FILE="${CONFIG_DIR}/qbauto.conf"
+RCLONE_CONFIG_TARGET="${CONFIG_DIR}/rclone.conf"
 
 # 导出全局变量
-export SCRIPT_DIR MODULES_DIR CONFIG_FILE
+export SCRIPT_DIR MODULES_DIR CONFIG_FILE RCLONE_CONFIG_TARGET
 
 # 设置最小化的默认日志配置，确保日志系统能正常工作
 LOG_DIR="/config/qbauto/log"
@@ -23,6 +25,87 @@ log() {
     local message="$1"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $message" >> "$LOG_FILE"
     echo "$message" >&2
+}
+
+# 自动查找并复制 rclone 配置文件
+copy_rclone_config() {
+    log "🔍 开始查找 rclone 配置文件..."
+    
+    # 如果目标配置文件已存在，先备份
+    if [ -f "$RCLONE_CONFIG_TARGET" ]; then
+        local backup_path="${RCLONE_CONFIG_TARGET}.backup.$(date +%Y%m%d_%H%M%S)"
+        cp "$RCLONE_CONFIG_TARGET" "$backup_path"
+        log "📦 备份现有配置文件: $backup_path"
+    fi
+    
+    # 查找可能的 rclone 配置文件路径
+    local possible_paths=(
+        "/config/rclone/rclone.conf"
+        "/etc/rclone/rclone.conf" 
+        "/home/qbittorrent/.config/rclone/rclone.conf"
+        "/root/.config/rclone/rclone.conf"
+        "$(rclone config file 2>/dev/null || echo '')"
+    )
+    
+    local found_config=""
+    for path in "${possible_paths[@]}"; do
+        if [ -f "$path" ]; then
+            found_config="$path"
+            log "✅ 找到 rclone 配置文件: $path"
+            break
+        fi
+    done
+    
+    # 如果没找到，尝试使用 find 命令搜索
+    if [ -z "$found_config" ]; then
+        log "🔍 在常见路径中未找到配置文件，开始全盘搜索..."
+        local found_path=$(find / -name "rclone.conf" 2>/dev/null | head -1)
+        if [ -n "$found_path" ]; then
+            found_config="$found_path"
+            log "✅ 通过搜索找到 rclone 配置文件: $found_path"
+        fi
+    fi
+    
+    if [ -n "$found_config" ] && [ -f "$found_config" ]; then
+        # 复制配置文件到目标位置
+        mkdir -p "$(dirname "$RCLONE_CONFIG_TARGET")"
+        if cp "$found_config" "$RCLONE_CONFIG_TARGET"; then
+            log "✅ 成功复制 rclone 配置文件到: $RCLONE_CONFIG_TARGET"
+            
+            # 设置正确的文件权限
+            chmod 600 "$RCLONE_CONFIG_TARGET"
+            log "🔒 已设置配置文件权限为 600"
+            
+            return 0
+        else
+            log "❌ 复制 rclone 配置文件失败"
+            return 1
+        fi
+    else
+        log "❌ 未找到可用的 rclone 配置文件"
+        return 1
+    fi
+}
+
+# 更新配置文件中的 RCLONE_CONFIG 路径
+update_config_file() {
+    if [ -f "$CONFIG_FILE" ]; then
+        # 检查是否需要更新配置
+        local current_config=$(grep "^RCLONE_CONFIG=" "$CONFIG_FILE" | cut -d'=' -f2- | tr -d '"'"'")
+        if [ "$current_config" != "$RCLONE_CONFIG_TARGET" ]; then
+            log "🔄 更新配置文件中的 RCLONE_CONFIG 路径..."
+            # 使用 sed 更新配置
+            if sed -i "s|^RCLONE_CONFIG=.*|RCLONE_CONFIG=\"$RCLONE_CONFIG_TARGET\"|" "$CONFIG_FILE"; then
+                log "✅ 已更新配置文件中的 RCLONE_CONFIG 路径"
+            else
+                log "⚠️ 更新配置文件失败，但继续执行"
+            fi
+        else
+            log "ℹ️ 配置文件中的 RCLONE_CONFIG 路径已是最新"
+        fi
+    else
+        log "⚠️ 配置文件不存在，将在加载模块后创建"
+    fi
 }
 
 # 加载核心模块
@@ -44,6 +127,15 @@ main() {
     log "🎯 主流程开始"
     log "📝 输入参数: 名称='$torrent_name', 路径='$content_dir'"
     
+    # 自动复制 rclone 配置文件
+    if copy_rclone_config; then
+        log "✅ rclone 配置文件准备就绪"
+        # 更新配置文件路径
+        update_config_file
+    else
+        log "❌ rclone 配置文件准备失败，尝试使用现有配置"
+    fi
+    
     # 加载配置
     if ! load_config; then
         log "❌ 配置加载失败"
@@ -59,11 +151,11 @@ main() {
         log "✅ 设置 RCLONE_CONFIG 环境变量: $RCLONE_CONFIG"
     else
         log "❌ Rclone 配置文件不存在: $RCLONE_CONFIG"
-        # 尝试自动查找 rclone 配置
-        find_rclone_config
-        if [ -n "$RCLONE_CONFIG" ] && [ -f "$RCLONE_CONFIG" ]; then
+        # 如果配置文件中指定的路径不存在，使用我们复制的配置文件
+        if [ -f "$RCLONE_CONFIG_TARGET" ]; then
+            RCLONE_CONFIG="$RCLONE_CONFIG_TARGET"
             export RCLONE_CONFIG
-            log "✅ 自动找到 Rclone 配置文件: $RCLONE_CONFIG"
+            log "✅ 使用自动复制的配置文件: $RCLONE_CONFIG"
         else
             log "❌ 无法找到可用的 Rclone 配置文件"
             exit 1
@@ -293,35 +385,6 @@ main() {
     fi
 }
 
-# 自动查找 rclone 配置文件
-find_rclone_config() {
-    local possible_paths=(
-        "/config/rclone/rclone.conf"
-        "/etc/rclone/rclone.conf" 
-        "/home/qbittorrent/.config/rclone/rclone.conf"
-        "/root/.config/rclone/rclone.conf"
-        "$(rclone config file 2>/dev/null || echo '')"
-    )
-    
-    for path in "${possible_paths[@]}"; do
-        if [ -f "$path" ]; then
-            RCLONE_CONFIG="$path"
-            log "🔍 找到 Rclone 配置文件: $path"
-            return 0
-        fi
-    done
-    
-    local found_path=$(find / -name "rclone.conf" 2>/dev/null | head -1)
-    if [ -n "$found_path" ]; then
-        RCLONE_CONFIG="$found_path"
-        log "🔍 通过搜索找到 Rclone 配置文件: $found_path"
-        return 0
-    fi
-    
-    log "❌ 未找到 Rclone 配置文件"
-    return 1
-}
-
 # 独立健康检查函数（供cron使用）
 health_check() {
     # 设置最小化的默认配置
@@ -372,6 +435,10 @@ case "${1:-}" in
         else
             log "❌ 通知功能未启用"
         fi
+        ;;
+    "copy-rclone-config")
+        # 手动复制 rclone 配置
+        copy_rclone_config
         ;;
     *)
         # 运行主程序
