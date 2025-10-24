@@ -36,10 +36,28 @@ mkdir -p /config/qbauto/log
 ### 2. 放置脚本文件
 ```
 /config/qbauto/
-├── qbauto.sh      # 主脚本
-├── qbauto.conf    # 配置文件
-├── modules        # 模块目录
-└── log/           # 日志目录
+├── qbauto.sh                 # 主脚本
+├── qbauto.conf              # 配置文件
+├── modules/                  # 模块目录
+│   ├── blacklist.sh         # 黑名单管理模块
+│   ├── config.sh            # 配置管理模块
+│   ├── core.sh              # 核心功能模块
+│   ├── diagnose.sh          # 诊断模块
+│   ├── filefilter.sh        # 文件过滤模块
+│   ├── health.sh            # 系统健康检查模块
+│   ├── init.sh              # 初始化模块
+│   ├── logger.sh            # 日志记录模块
+│   ├── network.sh           # 网络功能模块
+│   ├── notify.sh            # 通知模块
+│   ├── performance.sh       # 性能监控模块
+│   ├── qbittorrent.sh       # qBittorrent 控制模块
+│   ├── stats.sh             # 统计信息模块
+│   ├── storage.sh           # 存储管理模块
+│   └── upload.sh            # 上传功能模块
+└── log/                     # 日志目录
+    ├── qbauto.log           # 主日志文件（示例）
+    ├── error.log           # 错误日志（示例）
+    └── debug.log           # 调试日志（示例）
 ```
 ### 3. 设置脚本权限
 ```
@@ -185,6 +203,7 @@ A: 调整 rclone 传输参数或检查网络连接
 3. 根据你的环境修改 `qbauto.conf` 中的配置
 4. 
 5. 将 `README.md` 作为使用文档参考
+
 
 
 
